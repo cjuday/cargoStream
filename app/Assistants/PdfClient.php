@@ -75,7 +75,11 @@ abstract class PdfClient
 
         $text = str_replace("\f", "", $text);
 
-        return explode("\n", $text);
+        $lines = explode("\n", $text);
+
+        $lines = array_map('trim', $lines);
+
+        return $lines;
     }
 
     protected function getValidator() : Validator {
