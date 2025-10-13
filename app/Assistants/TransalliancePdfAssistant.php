@@ -9,7 +9,9 @@ use Illuminate\Support\Str;
 class TransalliancePdfAssistant extends PdfClient
 {
     public static function validateFormat (array $lines) {
-        return Str::startsWith($lines[0], "Date/Time :");
+        return Str::startsWith($lines[0], "Date/Time :")
+               && array_find_key($lines, fn($l) => $l === "VAT NUM: GB712061386")
+               && array_find_key($lines, fn($l) => $l === "invoice.ts@transalliance.eu");
     }
 
     public function processLines (array $lines, ?string $attachment_filename = null) {
@@ -108,10 +110,12 @@ class TransalliancePdfAssistant extends PdfClient
         $companyInfo = $this->extractCompanyInfo($array);
         $timeInfo    = $this->extractTime($array);
 
-        return [
+        $data[] = [
             'company_address' => $companyInfo,
             'time'            => $timeInfo
         ];
+
+        return $data;
     }
 
     public function extractCompanyInfo(array $array) {
@@ -290,13 +294,15 @@ class TransalliancePdfAssistant extends PdfClient
             }
         }
 
-        return [
+        $data[] = [
                     'title'         => $array[$title],
                     'package_type'  => 'other',
                     'number'        => $array[$number],
                     'ldm'           => $numericLines[0] * 1000,
                     'weight'        => $numericLines[1]
         ];
+
+        return $data;
     }
 
     public function extractOrderRef(array $array) {

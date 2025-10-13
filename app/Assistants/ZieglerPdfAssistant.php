@@ -289,8 +289,7 @@ class ZieglerPdfAssistant extends PdfClient
         foreach($array as $line) {
             $line = trim($line);
             if (preg_match('/\b\d+\s+pallets?\b/i', $line, $matches)) {
-                // $matches[0] will contain the full match, e.g., "66 PALLETS"
-                $palletCount = (int)$matches[0]; // optional: extract number
+                $palletCount = (int)$matches[0]; // extract number
 
                 $data[] = [
                     'title'         => '',
