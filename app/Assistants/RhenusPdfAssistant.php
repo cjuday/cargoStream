@@ -18,7 +18,8 @@ class RhenusPdfAssistant extends PdfClient
     public function processLines (array $lines, ?string $attachment_filename = null) {
         /*Customer Information Start*/
         $companyInfo                = array_find_key($lines, fn($l) => $l == "Invoicing address");
-        $email                      = array_find_key($lines, fn($l) => $l == "Email:");
+        $email                      = array_find_key($lines, fn($l) => $l == "Best regards");
+        $emailAddress               = str_contains($lines[$email+8], '@') ? $email+8 : $email + 5;
         $companyPostalCodeAndCity   = $this->extractCityandPostalCode($lines[$companyInfo+4]);
 
         $customer = [
@@ -26,7 +27,8 @@ class RhenusPdfAssistant extends PdfClient
             'details' => [
                 'company'           => $lines[$companyInfo+2],
                 'vat_code'          => $lines[$companyInfo+9],
-                'email'             => $lines[$email+2],
+                'email'             => $lines[$emailAddress],
+                'contact_person'    => $lines[$email+1],
                 'street_address'    => $lines[$companyInfo+3],
                 'city'              => $companyPostalCodeAndCity['city'],
                 'country'           => 'GB',
@@ -37,15 +39,58 @@ class RhenusPdfAssistant extends PdfClient
 
         /*Loading & Destination Locations, Cargo Start*/
         $loadingAndDestinationListStart = array_find_key($lines, fn($l) => $l === "Principal ref.");
-        $loadingAndDestinationlistEnd   = array_find_key($lines, fn($l) => $l === "Freight cost");
+        $loadingAndDestinationlistEnd   = array_find_key($lines, fn($l) => $l === "When invoicing please mention our Transport Number.");
 
         $allLocationList                = $this->extractLocations(
                                             array_slice($lines, $loadingAndDestinationListStart, $loadingAndDestinationlistEnd - 1 - $loadingAndDestinationListStart)
                                         );
 
-        $loadingLocations     = $allLocationList[0];
-        $destinationLocations = $allLocationList[1];
+        $loading_locations      = $allLocationList[0];
+        $destination_locations  = $allLocationList[1];
+        $cargos                 = $allLocationList[2];
         /*Loading & Destination Locations, Cargo End*/
+
+        /*Order Reference Start*/
+        $orderReference = array_find_key($lines, fn($l) => $l == "Principal ref.");
+        $order_reference = trim($lines[$orderReference+2]);
+        /*Order Reference End*/
+
+        /*Freight Price Start*/
+        $freight_price = array_find_key($lines, fn($l) => $l == "Freight cost");
+        $freight_price = $lines[$freight_price+2];
+        $freight_price = uncomma(explode(" ", $freight_price)[0]);
+        /*Freight Price End*/
+        
+        /*Freight Currency Start*/
+        $freight_currency = "EUR";
+        /*Freight Currency End*/
+
+        /*Transport Number Start*/
+        $transport_number = array_find_key($lines, fn($l) => $l == "Transport no.");
+        $transport_number = $transport_number+10;
+        if(!is_int($lines[$transport_number])) {
+            $transport_number = $transport_number-8;
+        }
+        $transport_number = $lines[$transport_number];
+        /*Transport Number End*/
+
+        /*Attachments Start*/
+        $attachment_filenames = [mb_strtolower($attachment_filename ?? '')];
+        /*Attachments End*/
+
+        $data = compact(
+            'customer',
+            'loading_locations',
+            'destination_locations',
+            'attachment_filenames',
+            'cargos',
+            'order_reference',
+            'freight_price',
+            'freight_currency',
+            'transport_number'
+        );
+
+        $this->createOrder($data);
     }
 
     public function extractCityandPostalCode(string $line)
@@ -77,6 +122,7 @@ class RhenusPdfAssistant extends PdfClient
     public function extractLocations(array $lines) {
         $loadingLocations       = [];
         $destinationLocations   = [];
+        $cargoList              = [];
         $currentBlock           = [];
         $isCollecting           = false;
         $lastIndex              = array_key_last($lines);
@@ -85,59 +131,8 @@ class RhenusPdfAssistant extends PdfClient
             $line = trim($line);
             if ($line === '') continue;
             if ((strcasecmp($line, 'Principal ref.') === 0)) {
-                // Save previous block if we were collecting
                 if ($isCollecting && !empty($currentBlock)) {
-                    $loadingInfoStart   = array_find_key($currentBlock, fn($l) => $l === "Unload place");
-                    $loadingInfoEnd     = '';
-                    foreach($currentBlock as $index => $currentLine) {
-                        $loadingInfoEnd     = Str::contains($currentLine, "Sender ref.:");
-
-                        if($loadingInfoEnd) {
-                            $loadingInfoEnd = $index;
-                            break;
-                        }
-                    }
-                    $newLoadingLocation = $this->extractCompanyInformation(
-                        array_slice($currentBlock, $loadingInfoStart+1, $loadingInfoEnd - 1 - $loadingInfoStart), $loadingLocations
-                    );
-
-                    if($newLoadingLocation != null) {
-                        $loadingDateAndTimeStart    = array_find_key($currentBlock, fn($l) => $l === "Requested");
-                        $loadingDateAndTimeEnd      = array_find_key($currentBlock, fn($l) => $l === "Latest");
-                        $loadingDateAndTime         = $this->extractDateAndTime(
-                                                        array_slice($currentBlock, $loadingDateAndTimeStart+1, $loadingDateAndTimeEnd - $loadingDateAndTimeStart)
-                                                    );
-                        $loadingLocations[] = [
-                                                    'company_address' => $newLoadingLocation,
-                                                    'time'            => $loadingDateAndTime
-                                              ];
-                    }
-
-                    $destinationInfoStart   = $loadingInfoEnd;
-                    $destinationInfoEnd     = '';
-                    foreach($currentBlock as $index => $currentLine) {
-                        $destinationInfoEnd     = Str::contains($currentLine, "Consignee ref:");
-
-                        if($destinationInfoEnd) {
-                            $destinationInfoEnd = $index;
-                            break;
-                        }
-                    }
-
-                    $newDestinationLocation = $this->extractCompanyInformation(
-                        array_slice($currentBlock, $destinationInfoStart+1, $destinationInfoEnd - 1 - $destinationInfoStart)
-                    );
-
-                    $unloadingDateAndTimeStart    = array_find_key($currentBlock, fn($l) => $l === "Latest");
-                    $unloadingDateAndTimeEnd      = array_find_key($currentBlock, fn($l) => $l === "Pickup instructions");
-                    $unloadingDateAndTime         = $this->extractDateAndTime(
-                        array_slice($currentBlock, $unloadingDateAndTimeStart+1, $unloadingDateAndTimeEnd - 1 - $unloadingDateAndTimeStart)
-                    );
-
-                    $destinationLocations[] = [
-                                                'company_address' => $newDestinationLocation,
-                                                'time'            => $unloadingDateAndTime
-                    ];
+                    $this->extractInformationsFromBlocks($currentBlock, $loadingLocations, $destinationLocations, $cargoList);
                 }
                 $currentBlock = [];
                 $isCollecting = true;
@@ -147,57 +142,7 @@ class RhenusPdfAssistant extends PdfClient
             if ($isCollecting && $index > $lastIndex) {
                 $isCollecting = false;
                 if (!empty($currentBlock)) {
-                    $loadingInfoStart   = array_find_key($currentBlock, fn($l) => $l === "Unload place");
-                    $loadingInfoEnd     = '';
-                    foreach($currentBlock as $index => $currentLine) {
-                        $loadingInfoEnd     = Str::contains($currentLine, "Sender ref.:");
-
-                        if($loadingInfoEnd) {
-                            $loadingInfoEnd = $index;
-                            break;
-                        }
-                    }
-                    $newLoadingLocation = $this->extractCompanyInformation(
-                        array_slice($currentBlock, $loadingInfoStart+1, $loadingInfoEnd - 1 - $loadingInfoStart), $loadingLocations
-                    );
-
-                    if($newLoadingLocation != null) {
-                        $loadingDateAndTimeStart    = array_find_key($currentBlock, fn($l) => $l === "Requested");
-                        $loadingDateAndTimeEnd      = array_find_key($currentBlock, fn($l) => $l === "Latest");
-                        $loadingDateAndTime         = $this->extractDateAndTime(
-                            array_slice($currentBlock, $loadingDateAndTimeStart+1, $loadingDateAndTimeEnd - $loadingDateAndTimeStart)
-                        );
-                        $loadingLocations[] = [
-                            'company_address' => $newLoadingLocation,
-                            'time'            => $loadingDateAndTime
-                        ];
-                    }
-
-                    $destinationInfoStart   = $loadingInfoEnd;
-                    $destinationInfoEnd     = '';
-                    foreach($currentBlock as $index => $currentLine) {
-                        $destinationInfoEnd     = Str::contains($currentLine, "Consignee ref:");
-
-                        if($destinationInfoEnd) {
-                            $destinationInfoEnd = $index;
-                            break;
-                        }
-                    }
-
-                    $newDestinationLocation = $this->extractCompanyInformation(
-                        array_slice($currentBlock, $destinationInfoStart+1, $destinationInfoEnd - 1 - $destinationInfoStart)
-                    );
-
-                    $unloadingDateAndTimeStart    = array_find_key($currentBlock, fn($l) => $l === "Latest");
-                    $unloadingDateAndTimeEnd      = array_find_key($currentBlock, fn($l) => $l === "Pickup instructions");
-                    $unloadingDateAndTime         = $this->extractDateAndTime(
-                        array_slice($currentBlock, $unloadingDateAndTimeStart+1, $unloadingDateAndTimeEnd - 1 - $unloadingDateAndTimeStart)
-                    );
-
-                    $destinationLocations[] = [
-                        'company_address' => $newDestinationLocation,
-                        'time'            => $unloadingDateAndTime
-                    ];
+                    $this->extractInformationsFromBlocks($currentBlock, $loadingLocations, $destinationLocations, $cargoList);
                 }
                 $currentBlock = [];
                 continue;
@@ -209,61 +154,94 @@ class RhenusPdfAssistant extends PdfClient
         }
 
         if ($isCollecting && !empty($currentBlock)) {
-            $loadingInfoStart   = array_find_key($currentBlock, fn($l) => $l === "Unload place");
-            $loadingInfoEnd     = '';
-            foreach($currentBlock as $index => $currentLine) {
-                $loadingInfoEnd     = Str::contains($currentLine, "Sender ref.:");
+            $this->extractInformationsFromBlocks($currentBlock, $loadingLocations, $destinationLocations, $cargoList);
+        }
 
-                if($loadingInfoEnd) {
-                    $loadingInfoEnd = $index;
-                    break;
-                }
+        return [$loadingLocations, $destinationLocations, $cargoList];
+    }
+
+    public function extractInformationsFromBlocks(array $currentBlock, array &$loadingLocations, array &$destinationLocations, array &$cargoList) {
+        $loadingInfoStart   = array_find_key($currentBlock, fn($l) => $l === "Unload place");
+        $loadingInfoEnd     = '';
+        foreach($currentBlock as $index => $currentLine) {
+            $loadingInfoEnd     = Str::contains($currentLine, "Sender ref.:");
+
+            if($loadingInfoEnd) {
+                $loadingInfoEnd = $index;
+                break;
             }
-            $newLoadingLocation = $this->extractCompanyInformation(
-                array_slice($currentBlock, $loadingInfoStart+1, $loadingInfoEnd - 1 - $loadingInfoStart), $loadingLocations
+        }
+        $newLoadingLocation = $this->extractCompanyInformation(
+            array_slice($currentBlock, $loadingInfoStart+1, $loadingInfoEnd - 1 - $loadingInfoStart), $loadingLocations
+        );
+
+        if($newLoadingLocation != null) {
+            $loadingDateAndTimeStart    = array_find_key($currentBlock, fn($l) => $l === "Requested");
+            $loadingDateAndTimeEnd      = array_find_key($currentBlock, fn($l) => $l === "Latest");
+            $loadingDateAndTime         = $this->extractDateAndTime(
+                array_slice($currentBlock, $loadingDateAndTimeStart+1, $loadingDateAndTimeEnd - $loadingDateAndTimeStart)
             );
 
-            if($newLoadingLocation != null) {
-                $loadingDateAndTimeStart    = array_find_key($currentBlock, fn($l) => $l === "Requested");
-                $loadingDateAndTimeEnd      = array_find_key($currentBlock, fn($l) => $l === "Latest");
-                $loadingDateAndTime         = $this->extractDateAndTime(
-                    array_slice($currentBlock, $loadingDateAndTimeStart+1, $loadingDateAndTimeEnd - $loadingDateAndTimeStart)
-                );
-
-                $loadingLocations[] = [
-                    'company_address' => $newLoadingLocation,
-                    'time'            => $loadingDateAndTime
-                ];
-            }
-
-            $destinationInfoStart   = $loadingInfoEnd;
-            $destinationInfoEnd     = '';
-            foreach($currentBlock as $index => $currentLine) {
-                $destinationInfoEnd     = Str::contains($currentLine, "Consignee ref:");
-
-                if($destinationInfoEnd) {
-                    $destinationInfoEnd = $index;
-                    break;
-                }
-            }
-
-            $newDestinationLocation = $this->extractCompanyInformation(
-                array_slice($currentBlock, $destinationInfoStart+1, $destinationInfoEnd - 1 - $destinationInfoStart)
-            );
-
-            $unloadingDateAndTimeStart    = array_find_key($currentBlock, fn($l) => $l === "Latest");
-            $unloadingDateAndTimeEnd      = array_find_key($currentBlock, fn($l) => $l === "Pickup instructions");
-            $unloadingDateAndTime         = $this->extractDateAndTime(
-                array_slice($currentBlock, $unloadingDateAndTimeStart+1, $unloadingDateAndTimeEnd - 1 - $unloadingDateAndTimeStart)
-            );
-
-            $destinationLocations[] = [
-                'company_address' => $newDestinationLocation,
-                'time'            => $unloadingDateAndTime
+            $loadingLocations[] = [
+                'company_address' => $newLoadingLocation,
+                'time'            => $loadingDateAndTime
             ];
         }
 
-        return [$loadingLocations, $destinationLocations];
+        $destinationInfoStart   = $loadingInfoEnd;
+        $destinationInfoEnd     = '';
+        foreach($currentBlock as $index => $currentLine) {
+            $destinationInfoEnd     = Str::contains($currentLine, "Consignee ref:");
+
+            if($destinationInfoEnd) {
+                $destinationInfoEnd = $index;
+                break;
+            }
+        }
+
+        $newDestinationLocation = $this->extractCompanyInformation(
+            array_slice($currentBlock, $destinationInfoStart+1, $destinationInfoEnd - 1 - $destinationInfoStart)
+        );
+
+        $unloadingDateAndTimeStart    = array_find_key($currentBlock, fn($l) => $l === "Latest");
+        $unloadingDateAndTimeEnd      = array_find_key($currentBlock, fn($l) => $l === "Pickup instructions");
+        $dateTimeArray                = array_slice($currentBlock, $unloadingDateAndTimeStart+1, $unloadingDateAndTimeEnd - 1 - $unloadingDateAndTimeStart);
+
+        $unloadingDateFound = false;
+        foreach($dateTimeArray as $dateLine) {
+            if(preg_match('/\d{1,2}-[A-Za-z]{3}-\d{4}/', $dateLine)) {
+                $unloadingDateFound = true;
+            }
+        }
+
+        if(!$unloadingDateFound) {
+            $arrayForExtraction = [];
+            if(preg_match('/\d{1,2}-[A-Za-z]{3}-\d{4}/', $currentBlock[$unloadingDateAndTimeEnd - 1])) {
+                $date = $currentBlock[$unloadingDateAndTimeEnd - 1];
+                $arrayForExtraction = [$currentBlock[$unloadingDateAndTimeEnd - 1]];
+            }else{
+                $dateLocation = array_find_key($currentBlock, fn($l) => $l === "Latest");
+                $date = $currentBlock[$dateLocation - 1];
+                $time = $dateTimeArray[0]." ".$dateTimeArray[1];
+                $arrayForExtraction = [$date, $time];
+            }
+            $unloadingDateAndTime = $this->extractDateAndTime($arrayForExtraction);
+        }else{
+            $unloadingDateAndTime         = $this->extractDateAndTime(
+                array_slice($currentBlock, $unloadingDateAndTimeStart+1, $unloadingDateAndTimeEnd - 1 - $unloadingDateAndTimeStart)
+            );
+        }
+
+        $destinationLocations[] = [
+            'company_address' => $newDestinationLocation,
+            'time'            => $unloadingDateAndTime
+        ];
+
+        $cargoInfoStart = array_find_key($currentBlock, fn($l) => $l === "Total quantity:");
+        $cargoInfoEnd   = array_key_last($currentBlock);
+        $cargoList[] = $this->extractCargo(
+            array_slice($currentBlock, $cargoInfoStart+1, $cargoInfoEnd - $cargoInfoStart)
+        );
     }
 
     public function extractCompanyInformation(array $array, array $loadingLocations = []) {
@@ -323,7 +301,7 @@ class RhenusPdfAssistant extends PdfClient
         $startTime = '00:00';
         $endTime = null;
 
-        if(isset($array[1]) && !empty(trim($array[1])) && !Str::contains($array[1], "Registered")) {
+        if(isset($array[1]) && !empty(trim($array[1])) && !Str::contains($array[1], "Registered") && !preg_match('/\d{1,2}-[A-Za-z]{3}-\d{4}/', $array[1])) {
             $time = explode("-", $array[1]);
             $startTime = trim($time[0]);
             $endTime   = trim($time[1]);
@@ -333,5 +311,32 @@ class RhenusPdfAssistant extends PdfClient
         $endDate = $endTime ? Carbon::createFromFormat('d-M-Y H:i', "$date $endTime")->toIsoString() : null;
 
         return $endDate ? ['datetime_from' => $startDate, 'datetime_to' => $endDate] : ['datetime_from' => $startDate];
+    }
+
+    public function extractCargo(array $array) {
+        $data = [
+            'title'         => $array[5],
+            'package_type'  => 'other',
+            'weight'        => empty($array[6]) ? 0 : uncomma($array[6]),
+            'volume'        => empty($array[7]) ? 0 : uncomma($array[7]),
+            'ldm'           => uncomma($array[8])
+        ];
+
+        $packageLength = array_find_key($array, fn($l) => $l === "Length [cm]");
+        if($packageLength) {
+            $data['pkg_length'] = uncomma($array[$packageLength+1]);
+        }
+
+        $packageWidth = array_find_key($array, fn($l) => $l === "Width [cm]");
+        if($packageWidth) {
+            $data['pkg_width'] = uncomma($array[$packageWidth+1]);
+        }
+
+        $packageHeight = array_find_key($array, fn($l) => $l === "Height [cm]");
+        if($packageHeight) {
+            $data['pkg_height'] = uncomma($array[$packageHeight+1]);
+        }
+
+        return $data;
     }
 }
