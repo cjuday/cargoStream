@@ -53,6 +53,9 @@ class RhenusPdfAssistant extends PdfClient
         /*Order Reference Start*/
         $orderReference = array_find_key($lines, fn($l) => $l == "Principal ref.");
         $order_reference = trim($lines[$orderReference+2]);
+        if($order_reference == "No.") {
+            $order_reference = "Not Provided";
+        }
         /*Order Reference End*/
 
         /*Freight Price Start*/
@@ -68,7 +71,7 @@ class RhenusPdfAssistant extends PdfClient
         /*Transport Number Start*/
         $transport_number = array_find_key($lines, fn($l) => $l == "Transport no.");
         $transport_number = $transport_number+10;
-        if(!is_int($lines[$transport_number])) {
+        if(!is_numeric($lines[$transport_number])) {
             $transport_number = $transport_number-8;
         }
         $transport_number = $lines[$transport_number];
